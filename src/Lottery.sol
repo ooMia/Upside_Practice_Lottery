@@ -13,74 +13,104 @@ interface ILottery {
     struct Round {
         uint sellPhaseLimit;
         uint16 winningNumber;
-        uint nWinners;
     }
     struct Ticket {
-        uint roundId;
+        address owner;
         uint16 guess;
     }
     enum Phase {
         Sell,
+        Draw,
         Claim
     }
 }
 
 contract Lottery is ILottery {
-    // [roundId][guess][user] => Ticket[]
-    mapping(uint16 => mapping(address => Ticket[]))[] userTicketRecords;
-    Round[] rounds;
+    uint constant TICKET_PRICE = 0.1 ether;
+    uint constant PHASE_LENGTH = 24 hours;
+
+    mapping(address => uint) claims;
+    Round round;
+
+    // ===============| Phase Temporary Dynamics |================
+
+    Ticket[] tickets; // multi struct
+    mapping(address => mapping(uint16 => bool))[] isPurchased; // deletable mapping
+    mapping(uint16 => uint)[] nTickets; // deletable mapping
 
     constructor() {
-        rounds.push(Round(block.timestamp + 24 hours, 0, 0));
-        userTicketRecords.push();
+        round = Round(block.timestamp + PHASE_LENGTH, 0);
+        nTickets.push();
+        isPurchased.push();
     }
 
     modifier phase(Phase p) {
         if (p == Phase.Sell) {
-            require(block.timestamp < _getCurrentRound().sellPhaseLimit);
-        } else if (p == Phase.Claim) {
-            require(block.timestamp >= _getCurrentRound().sellPhaseLimit);
+            require(block.timestamp < round.sellPhaseLimit, "sell phase ended");
         } else {
-            revert("Invalid phase");
+            require(
+                block.timestamp >= round.sellPhaseLimit,
+                "sell phase not ended"
+            );
+            require(
+                (round.winningNumber == 0) == (p == Phase.Draw),
+                "already drawn"
+            );
         }
         _;
     }
 
-    // ================== ILottery ==================
+    // ===============| ILottery |================
 
     // 1. a user buys a ticket with a guess for this round
-    // 2. ticket costs 0.1 ether: user should send exactly 0.1 ether
+    // 2. ticket costs TICKET_PRICE: user should send exactly TICKET_PRICE
     // 3. no duplicate guess:uint16 allowed per user
     // 4. no limit on the number of tickets a user can buy
     function buy(uint16 guess) external payable override phase(Phase.Sell) {
-        require(msg.value == 0.1 ether, "Invalid ticket price");
-        require(_getUsersTickets(guess).length == 0, "no duplicate guess");
-        userTicketRecords[_getRoundId()][guess][msg.sender].push(
-            Ticket(_getRoundId(), guess)
-        );
+        require(msg.value == TICKET_PRICE, "invalid ticket price");
+        require(!isPurchased[0][msg.sender][guess], "already purchased");
+        tickets.push(Ticket(msg.sender, guess));
+        ++nTickets[0][guess];
+        isPurchased[0][msg.sender][guess] = true;
     }
 
-    function draw() external override phase(Phase.Claim) {}
+    // 0. assume service maintainer calls this function
+    // 1. draw will determine the winning number for this round
+    // 2. winning number range is 1-65535
+    // 3. create a new round with a new sell phase limit
+    // 4. determine the number of winners
+    function draw() external override phase(Phase.Draw) {
+        round.winningNumber = _generateWinningNumber();
+        uint nWinners = nTickets[0][round.winningNumber];
+        uint prize = nWinners > 0 ? address(this).balance / nWinners : 0;
+
+        while (tickets.length > 0) {
+            Ticket storage _ticket = tickets[tickets.length - 1];
+            if (_ticket.guess == round.winningNumber) {
+                claims[_ticket.owner] += prize;
+            }
+            tickets.pop();
+        }
+        _initialize();
+    }
 
     function claim() external override phase(Phase.Claim) {}
 
     function winningNumber() public view override returns (uint16) {
-        return _getCurrentRound().winningNumber;
+        return round.winningNumber;
     }
 
     // ================== Internal ==================
 
-    function _getRoundId() internal view returns (uint) {
-        return rounds.length - 1;
+    function _generateWinningNumber() internal view returns (uint16) {
+        return uint16(block.timestamp % (type(uint16).max - 1)) + 1;
     }
 
-    function _getCurrentRound() internal view returns (Round storage) {
-        return rounds[_getRoundId()];
-    }
-
-    function _getUsersTickets(
-        uint16 guess
-    ) internal view returns (Ticket[] storage) {
-        return userTicketRecords[_getRoundId()][guess][msg.sender];
+    function _initialize() internal {
+        round = Round(block.timestamp + PHASE_LENGTH, 0);
+        nTickets.pop();
+        nTickets.push();
+        isPurchased.pop();
+        isPurchased.push();
     }
 }
