@@ -32,6 +32,7 @@ contract Lottery is ILottery {
 
     constructor() {
         rounds.push(Round(block.timestamp + 24 hours, 0, 0));
+        userTicketRecords.push();
     }
 
     modifier phase(Phase p) {
@@ -47,7 +48,17 @@ contract Lottery is ILottery {
 
     // ================== ILottery ==================
 
-    function buy(uint16 guess) external payable override phase(Phase.Sell) {}
+    // 1. a user buys a ticket with a guess for this round
+    // 2. ticket costs 0.1 ether: user should send exactly 0.1 ether
+    // 3. no duplicate guess:uint16 allowed per user
+    // 4. no limit on the number of tickets a user can buy
+    function buy(uint16 guess) external payable override phase(Phase.Sell) {
+        require(msg.value == 0.1 ether, "Invalid ticket price");
+        require(_getUsersTickets(guess).length == 0, "no duplicate guess");
+        userTicketRecords[_getRoundId()][guess][msg.sender].push(
+            Ticket(_getRoundId(), guess)
+        );
+    }
 
     function draw() external override phase(Phase.Claim) {}
 
